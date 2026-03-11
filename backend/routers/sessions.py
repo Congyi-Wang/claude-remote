@@ -64,10 +64,10 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
         await websocket.close()
         return
 
-    # If session_id is "new", create one
-    if session_id == "new":
+    # For "new" sessions, use a placeholder; real ID comes from Claude
+    is_new = session_id == "new"
+    if is_new:
         session_id = create_session_id()
-        await websocket.send_json({"type": "session_id", "session_id": session_id})
 
     try:
         while True:
@@ -88,7 +88,15 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
             async def on_done(result):
                 await websocket.send_json({"type": "done", **result})
 
-            await send_message(session_id, user_message, on_chunk, on_done)
+            async def on_session_id(new_id):
+                nonlocal session_id
+                session_id = new_id
+                await websocket.send_json({"type": "session_id", "session_id": new_id})
+
+            await send_message(session_id, user_message, on_chunk, on_done,
+                             on_session_id=on_session_id if is_new else None)
+            # After first message, session exists in Claude
+            is_new = False
 
     except WebSocketDisconnect:
         pass
