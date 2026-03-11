@@ -1,0 +1,19 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: claude-remote
+    ports:
+      - "8090:8090"
+    volumes:
+      - /usr/local/lib/node_modules/@anthropic-ai:/usr/local/lib/node_modules/@anthropic-ai:ro
+      - /usr/local/bin/claude:/usr/local/bin/claude:ro
+      - /home/claude-dev/.claude:/home/claude-dev/.claude
+    environment:
+      - HOME=/home/claude-dev
+      - PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      - PIN=000427
+      - JWT_SECRET=claude-remote-jwt-secret-key-2026
+      - CLAUDE_PROJECTS_DIR=/home/claude-dev/.claude/projects/-home-claude-dev
+    restart: unless-stopped
