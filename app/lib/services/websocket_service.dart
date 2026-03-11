@@ -19,7 +19,7 @@ class WebSocketService {
 
   bool _disposed = false;
   int _reconnectAttempts = 0;
-  static const _maxReconnectAttempts = 5;
+  static const _maxReconnectAttempts = 10;
 
   Future<bool> connect(String sessionId, String token) async {
     _connectSessionId = sessionId;
@@ -36,12 +36,11 @@ class WebSocketService {
       final wsUrl = 'ws://46.224.150.45/claude-remote/api/sessions/ws/$sid';
       _channel = WebSocketChannel.connect(Uri.parse(wsUrl));
 
-      // Send auth token
       _channel!.sink.add(jsonEncode({'token': _token}));
 
       _channel!.stream.listen(
         (data) {
-          _reconnectAttempts = 0; // Reset on successful message
+          _reconnectAttempts = 0;
           final msg = jsonDecode(data);
           final type = msg['type'] ?? '';
 
@@ -65,6 +64,10 @@ class WebSocketService {
             case 'error':
               onError?.call(msg['text'] ?? 'Unknown error');
               break;
+            case 'ping':
+              // Respond to server keepalive
+              _channel?.sink.add(jsonEncode({'type': 'pong'}));
+              break;
           }
         },
         onError: (e) {
@@ -77,7 +80,6 @@ class WebSocketService {
         },
       );
 
-      // Wait a moment for auth response
       await Future.delayed(const Duration(milliseconds: 500));
       return true;
     } catch (e) {
@@ -94,8 +96,9 @@ class WebSocketService {
       return;
     }
     _reconnectAttempts++;
-    final delay = Duration(seconds: _reconnectAttempts * 2);
-    Future.delayed(delay, () => _doConnect());
+    // Backoff: 1s, 2s, 3s, 4s, 5s, 5s, 5s...
+    final secs = _reconnectAttempts < 5 ? _reconnectAttempts : 5;
+    Future.delayed(Duration(seconds: secs), () => _doConnect());
   }
 
   void sendMessage(String message) {

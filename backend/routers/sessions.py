@@ -1,5 +1,6 @@
 import json
-from fastapi import APIRouter, HTTPException, Depends, WebSocket, WebSocketDisconnect, Query
+import asyncio
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Query
 from auth import verify_token
 from jsonl_parser import list_session_files, get_session_messages
 from session_manager import send_message, create_session_id, get_active_sessions, stop_session
@@ -7,10 +8,11 @@ import activity_log
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
+PING_INTERVAL = 20  # seconds
+
 
 @router.get("/")
 async def list_sessions(authorization: str = Query(default="", alias="token")):
-    """List all known sessions from JSONL files."""
     if authorization:
         token = authorization.replace("Bearer ", "")
         if not verify_token(token):
@@ -42,7 +44,7 @@ async def delete_session(session_id: str, token: str = ""):
 async def websocket_chat(websocket: WebSocket, session_id: str):
     await websocket.accept()
 
-    # First message should be auth token
+    # Auth
     try:
         auth_msg = await websocket.receive_text()
         auth_data = json.loads(auth_msg)
@@ -56,19 +58,36 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
         await websocket.close()
         return
 
-    # For "new" sessions, use a placeholder; real ID comes from Claude
     if session_id == "new":
         session_id = create_session_id()
 
     activity_log.log_connect(session_id)
 
+    # Keepalive ping task
+    ping_active = True
+
+    async def _ping_loop():
+        while ping_active:
+            await asyncio.sleep(PING_INTERVAL)
+            if not ping_active:
+                break
+            try:
+                await websocket.send_json({"type": "ping"})
+            except Exception:
+                break
+
+    ping_task = asyncio.create_task(_ping_loop())
+
     try:
         while True:
-            # Wait for user message
             msg_text = await websocket.receive_text()
             msg_data = json.loads(msg_text)
-            user_message = msg_data.get("message", "")
 
+            # Handle pong from client
+            if msg_data.get("type") == "pong":
+                continue
+
+            user_message = msg_data.get("message", "")
             if not user_message:
                 await websocket.send_json({"type": "error", "text": "Empty message"})
                 continue
@@ -109,3 +128,6 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
             await websocket.close()
         except Exception:
             pass
+    finally:
+        ping_active = False
+        ping_task.cancel()

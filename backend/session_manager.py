@@ -7,19 +7,16 @@ from typing import Optional
 
 # Track active sessions: session_id -> process info
 _active_sessions: dict[str, dict] = {}
-# Sessions we know were created by this backend (safe to --resume)
-_known_sessions: set[str] = set()
 
 
 async def send_message(session_id: str, message: str, on_chunk, on_done, on_session_id=None):
     """Send a message to claude CLI and stream the response via callbacks."""
-    use_resume = session_id in _known_sessions
+    # Always try --resume first (maintains conversation context)
+    result = await _run_claude(session_id, message, on_chunk, on_done, on_session_id, use_resume=True)
 
-    result = await _run_claude(session_id, message, on_chunk, on_done, on_session_id, use_resume)
-
-    # If --resume failed with "No conversation found", retry without it
+    # If --resume failed with "No conversation found", retry as new session
     if result == "retry_without_resume":
-        await _run_claude(session_id, message, on_chunk, on_done, on_session_id, False)
+        await _run_claude(session_id, message, on_chunk, on_done, on_session_id, use_resume=False)
 
 
 async def _run_claude(session_id, message, on_chunk, on_done, on_session_id, use_resume):
@@ -36,6 +33,8 @@ async def _run_claude(session_id, message, on_chunk, on_done, on_session_id, use
 
     env = os.environ.copy()
     env.pop("CLAUDECODE", None)
+
+    actual_session_id = session_id
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -56,7 +55,6 @@ async def _run_claude(session_id, message, on_chunk, on_done, on_session_id, use
 
         full_text = ""
         got_result = False
-        actual_session_id = session_id
 
         async for line in proc.stdout:
             line_str = line.decode("utf-8", errors="replace").strip()
@@ -73,7 +71,6 @@ async def _run_claude(session_id, message, on_chunk, on_done, on_session_id, use
                 sid = data.get("session_id", "")
                 if sid:
                     actual_session_id = sid
-                    _known_sessions.add(sid)
                     if sid != session_id:
                         _active_sessions.pop(session_id, None)
                         _active_sessions[sid] = {"process": proc, "status": "running"}
@@ -94,7 +91,6 @@ async def _run_claude(session_id, message, on_chunk, on_done, on_session_id, use
                 if data.get("is_error"):
                     errors = data.get("errors", [])
                     error_msg = "; ".join(errors) if errors else "Unknown error"
-                    # If resume failed, retry without it
                     if use_resume and "No conversation found" in error_msg:
                         await proc.wait()
                         await stderr_task
