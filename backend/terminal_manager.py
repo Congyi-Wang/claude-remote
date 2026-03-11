@@ -45,7 +45,7 @@ def list_tmux_sessions() -> list[dict]:
 
 
 def create_tmux_session(name: str, command: str | None = None, cwd: str | None = None) -> bool:
-    cmd = ["tmux", "new-session", "-d", "-s", name, "-x", "120", "-y", "36"]
+    cmd = ["tmux", "new-session", "-d", "-s", name, "-x", "80", "-y", "24"]
     if command:
         # Unset CLAUDECODE to allow launching claude inside tmux
         # Keep session alive with bash fallback if command exits
@@ -98,8 +98,8 @@ async def bridge_websocket_to_tmux(websocket, session_name: str):
     flags = fcntl.fcntl(fd, fcntl.F_GETFL)
     fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
-    # Set initial size
-    _set_winsize(fd, 120, 36)
+    # Set initial size (phone-friendly, will be resized by client)
+    _set_winsize(fd, 80, 24)
 
     closed = False
 
