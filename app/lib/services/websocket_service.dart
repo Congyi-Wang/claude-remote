@@ -2,24 +2,36 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+enum WsState { disconnected, connecting, connected }
+
 class WebSocketService {
   WebSocketChannel? _channel;
   String? _sessionId;
   String? _token;
   String? _connectSessionId;
+  WsState _state = WsState.disconnected;
+
   Function(String)? onChunk;
   Function(Map<String, dynamic>)? onDone;
   Function(String)? onStatus;
   Function(String)? onSessionId;
   Function(String)? onError;
-  Function()? onConnected;
+  Function(WsState)? onStateChange;
 
   String? get sessionId => _sessionId;
-  bool get isConnected => _channel != null;
+  WsState get state => _state;
 
   bool _disposed = false;
   int _reconnectAttempts = 0;
-  static const _maxReconnectAttempts = 10;
+  static const _maxReconnectAttempts = 15;
+  Completer<bool>? _authCompleter;
+  // Queue messages sent while connecting
+  final List<String> _pendingMessages = [];
+
+  void _setState(WsState s) {
+    _state = s;
+    onStateChange?.call(s);
+  }
 
   Future<bool> connect(String sessionId, String token) async {
     _connectSessionId = sessionId;
@@ -31,10 +43,14 @@ class WebSocketService {
 
   Future<bool> _doConnect() async {
     if (_disposed) return false;
+    _setState(WsState.connecting);
+
     try {
       final sid = _sessionId ?? _connectSessionId!;
       final wsUrl = 'ws://46.224.150.45/claude-remote/api/sessions/ws/$sid';
       _channel = WebSocketChannel.connect(Uri.parse(wsUrl));
+
+      _authCompleter = Completer<bool>();
 
       _channel!.sink.add(jsonEncode({'token': _token}));
 
@@ -46,7 +62,12 @@ class WebSocketService {
 
           switch (type) {
             case 'auth_ok':
-              onConnected?.call();
+              _setState(WsState.connected);
+              if (_authCompleter != null && !_authCompleter!.isCompleted) {
+                _authCompleter!.complete(true);
+              }
+              // Flush any messages queued while connecting
+              _flushPending();
               break;
             case 'session_id':
               _sessionId = msg['session_id'];
@@ -65,54 +86,86 @@ class WebSocketService {
               onError?.call(msg['text'] ?? 'Unknown error');
               break;
             case 'ping':
-              // Respond to server keepalive
               _channel?.sink.add(jsonEncode({'type': 'pong'}));
               break;
           }
         },
         onError: (e) {
           _channel = null;
+          _setState(WsState.disconnected);
+          if (_authCompleter != null && !_authCompleter!.isCompleted) {
+            _authCompleter!.complete(false);
+          }
           _tryReconnect();
         },
         onDone: () {
           _channel = null;
+          _setState(WsState.disconnected);
+          if (_authCompleter != null && !_authCompleter!.isCompleted) {
+            _authCompleter!.complete(false);
+          }
           _tryReconnect();
         },
       );
 
-      await Future.delayed(const Duration(milliseconds: 500));
-      return true;
+      // Wait for auth_ok with timeout
+      final ok = await _authCompleter!.future
+          .timeout(const Duration(seconds: 10), onTimeout: () => false);
+
+      if (!ok && !_disposed) {
+        _channel?.sink.close();
+        _channel = null;
+        _setState(WsState.disconnected);
+        _tryReconnect();
+      }
+      return ok;
     } catch (e) {
       _channel = null;
-      onError?.call(e.toString());
+      _setState(WsState.disconnected);
+      if (_authCompleter != null && !_authCompleter!.isCompleted) {
+        _authCompleter!.complete(false);
+      }
+      _tryReconnect();
       return false;
+    }
+  }
+
+  void _flushPending() {
+    while (_pendingMessages.isNotEmpty && _channel != null) {
+      _channel!.sink.add(_pendingMessages.removeAt(0));
     }
   }
 
   void _tryReconnect() {
     if (_disposed || _token == null) return;
     if (_reconnectAttempts >= _maxReconnectAttempts) {
-      onError?.call('Connection lost. Please go back and reopen the chat.');
+      onError?.call('Connection lost after $_maxReconnectAttempts attempts');
       return;
     }
     _reconnectAttempts++;
-    // Backoff: 1s, 2s, 3s, 4s, 5s, 5s, 5s...
+    _setState(WsState.connecting);
     final secs = _reconnectAttempts < 5 ? _reconnectAttempts : 5;
     Future.delayed(Duration(seconds: secs), () => _doConnect());
   }
 
   void sendMessage(String message) {
-    if (_channel != null) {
-      _channel!.sink.add(jsonEncode({'message': message}));
+    final payload = jsonEncode({'message': message});
+    if (_state == WsState.connected && _channel != null) {
+      _channel!.sink.add(payload);
     } else {
-      onError?.call('Not connected. Reconnecting...');
-      _tryReconnect();
+      // Queue the message — it will be sent when connected
+      _pendingMessages.add(payload);
+      if (_state == WsState.disconnected) {
+        _tryReconnect();
+      }
     }
   }
 
   void disconnect() {
     _disposed = true;
+    _pendingMessages.clear();
     _channel?.sink.close();
     _channel = null;
+    _setState(WsState.disconnected);
   }
 }

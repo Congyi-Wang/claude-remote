@@ -20,7 +20,7 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> {
+class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   final _controller = TextEditingController();
   final _scrollController = ScrollController();
   final _ws = WebSocketService();
@@ -29,14 +29,24 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _loading = true;
   bool _sending = false;
   String _status = '';
+  WsState _wsState = WsState.disconnected;
   late String _sessionId;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _sessionId = widget.sessionId;
     _loadHistory();
     _connectWs();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Reconnect when app comes back to foreground
+    if (state == AppLifecycleState.resumed && _wsState != WsState.connected) {
+      _connectWs();
+    }
   }
 
   Future<void> _loadHistory() async {
@@ -54,9 +64,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _connectWs() async {
     _ws.onChunk = (text) {
-      setState(() {
-        _streamingText += text;
-      });
+      setState(() => _streamingText += text);
       _scrollToBottom();
     };
 
@@ -104,8 +112,17 @@ class _ChatScreenState extends State<ChatScreen> {
       });
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $error')),
+          SnackBar(
+            content: Text('Error: $error'),
+            duration: const Duration(seconds: 2),
+          ),
         );
+      }
+    };
+
+    _ws.onStateChange = (state) {
+      if (mounted) {
+        setState(() => _wsState = state);
       }
     };
 
@@ -123,6 +140,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _status = 'thinking';
     });
     _controller.clear();
+    // sendMessage queues if not yet connected
     _ws.sendMessage(text);
     _scrollToBottom();
   }
@@ -141,6 +159,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _ws.disconnect();
     _controller.dispose();
     _scrollController.dispose();
@@ -159,9 +178,50 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
         backgroundColor: const Color(0xFF16213e),
         foregroundColor: Colors.white,
+        actions: [
+          // Connection indicator
+          Padding(
+            padding: const EdgeInsets.only(right: 12),
+            child: Icon(
+              Icons.circle,
+              size: 10,
+              color: _wsState == WsState.connected
+                  ? Colors.green
+                  : _wsState == WsState.connecting
+                      ? Colors.orange
+                      : Colors.red,
+            ),
+          ),
+        ],
       ),
       body: Column(
         children: [
+          // Connection banner when disconnected
+          if (_wsState == WsState.connecting)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              color: Colors.orange.withOpacity(0.2),
+              child: const Text(
+                'Connecting...',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.orange, fontSize: 12),
+              ),
+            ),
+          if (_wsState == WsState.disconnected)
+            GestureDetector(
+              onTap: _connectWs,
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                color: Colors.red.withOpacity(0.2),
+                child: const Text(
+                  'Disconnected. Tap to reconnect.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.red, fontSize: 12),
+                ),
+              ),
+            ),
           Expanded(
             child: _loading
                 ? const Center(
@@ -174,7 +234,6 @@ class _ChatScreenState extends State<ChatScreen> {
                       if (i < _messages.length) {
                         return MessageBubble(message: _messages[i]);
                       }
-                      // Streaming message
                       return MessageBubble(
                         message: MessageModel(
                           role: 'assistant',
