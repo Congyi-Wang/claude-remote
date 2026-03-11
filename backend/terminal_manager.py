@@ -44,12 +44,19 @@ def list_tmux_sessions() -> list[dict]:
         return []
 
 
-def create_tmux_session(name: str, command: str | None = None) -> bool:
+def create_tmux_session(name: str, command: str | None = None, cwd: str | None = None) -> bool:
     cmd = ["tmux", "new-session", "-d", "-s", name, "-x", "120", "-y", "36"]
     if command:
-        cmd.append(command)
+        # Unset CLAUDECODE to allow launching claude inside tmux
+        # Keep session alive with bash fallback if command exits
+        wrapped = f"unset CLAUDECODE; {command}; exec bash"
+        cmd.append(wrapped)
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        env = os.environ.copy()
+        env["PATH"] = "/usr/local/bin:/usr/bin:/bin:" + env.get("PATH", "")
+        env.pop("CLAUDECODE", None)
+        work_dir = cwd or os.path.expanduser("~")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=5, env=env, cwd=work_dir)
         return result.returncode == 0
     except Exception:
         return False
@@ -81,6 +88,7 @@ async def bridge_websocket_to_tmux(websocket, session_name: str):
     if pid == 0:
         # Child process: exec tmux attach
         os.environ["TERM"] = "xterm-256color"
+        os.environ.pop("CLAUDECODE", None)
         os.execlp("tmux", "tmux", "attach-session", "-t", session_name)
         # If exec fails, exit
         os._exit(1)

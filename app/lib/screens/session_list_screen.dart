@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import '../services/api_service.dart';
 import '../models/session_model.dart';
 import 'terminal_screen.dart';
-import 'chat_screen.dart';
 import 'usage_screen.dart';
 
 class SessionListScreen extends StatefulWidget {
@@ -41,30 +40,7 @@ class _SessionListScreenState extends State<SessionListScreen> {
     }
   }
 
-  // --- Chat sessions ---
-
-  void _openChat(String sessionId, String title) {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => ChatScreen(
-          apiService: widget.apiService,
-          sessionId: sessionId,
-          title: title,
-        ),
-      ),
-    ).then((_) => _refresh());
-  }
-
-  void _newChat() {
-    _openChat('new', 'New Session');
-  }
-
-  Future<void> _deleteChat(String sessionId) async {
-    await widget.apiService.deleteSession(sessionId);
-    _refresh();
-  }
-
-  // --- Terminal sessions ---
+  // --- Open terminal ---
 
   void _openTerminal(String name) {
     Navigator.of(context).push(
@@ -76,6 +52,55 @@ class _SessionListScreenState extends State<SessionListScreen> {
       ),
     ).then((_) => _refresh());
   }
+
+  // --- Resume a Claude chat session in a tmux terminal ---
+
+  Future<void> _resumeChat(String sessionId, String title) async {
+    // Use short name for tmux: "chat-<first 8 chars of session id>"
+    final tmuxName = 'chat-${sessionId.substring(0, 8)}';
+
+    // Check if this tmux session already exists
+    final existing = _terminalSessions.any((s) => s['name'] == tmuxName);
+    if (!existing) {
+      try {
+        await widget.apiService.createTerminalSession(
+          tmuxName,
+          command: 'claude --resume $sessionId --dangerously-skip-permissions',
+        );
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed: $e'), backgroundColor: Colors.red),
+          );
+        }
+        return;
+      }
+    }
+    _openTerminal(tmuxName);
+  }
+
+  // --- New Claude chat session in a tmux terminal ---
+
+  Future<void> _newChat() async {
+    // Create a tmux session running claude
+    final tmuxName = 'claude-${DateTime.now().millisecondsSinceEpoch ~/ 1000}';
+    try {
+      await widget.apiService.createTerminalSession(
+        tmuxName,
+        command: 'claude --dangerously-skip-permissions',
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed: $e'), backgroundColor: Colors.red),
+        );
+      }
+      return;
+    }
+    _openTerminal(tmuxName);
+  }
+
+  // --- Create a plain terminal ---
 
   Future<void> _createTerminal() async {
     final controller = TextEditingController();
@@ -131,7 +156,7 @@ class _SessionListScreenState extends State<SessionListScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF16213e),
-        title: const Text('Kill Terminal?', style: TextStyle(color: Colors.white)),
+        title: const Text('Kill Session?', style: TextStyle(color: Colors.white)),
         content: Text('Kill tmux session "$name"?',
             style: TextStyle(color: Colors.grey[300])),
         actions: [
@@ -262,24 +287,24 @@ class _SessionListScreenState extends State<SessionListScreen> {
 
                   const SizedBox(height: 16),
 
-                  // --- Chat Sessions Section ---
+                  // --- Claude Chat Sessions Section ---
                   _sectionHeader(
-                    icon: Icons.chat_bubble_outline,
-                    title: 'Chat Sessions',
+                    icon: Icons.smart_toy_outlined,
+                    title: 'Claude Sessions',
                     count: _chatSessions.length,
                     onAdd: _newChat,
                   ),
                   if (_chatSessions.isEmpty)
-                    _emptyHint('No chat sessions'),
+                    _emptyHint('No Claude sessions'),
                   ..._chatSessions.map((session) {
                     return Card(
                       color: const Color(0xFF16213e),
                       margin: const EdgeInsets.only(bottom: 8),
                       child: ListTile(
                         leading: Icon(
-                          session.active ? Icons.circle : Icons.circle_outlined,
+                          Icons.smart_toy_outlined,
                           color: session.active ? Colors.greenAccent : Colors.grey[600],
-                          size: 14,
+                          size: 24,
                         ),
                         title: Text(
                           session.title,
@@ -291,11 +316,7 @@ class _SessionListScreenState extends State<SessionListScreen> {
                           '${session.messageCount} messages · ${_formatChatTime(session.updatedAt)}',
                           style: TextStyle(color: Colors.grey[500], fontSize: 12),
                         ),
-                        trailing: IconButton(
-                          icon: Icon(Icons.close, color: Colors.grey[600], size: 20),
-                          onPressed: () => _deleteChat(session.id),
-                        ),
-                        onTap: () => _openChat(session.id, session.title),
+                        onTap: () => _resumeChat(session.id, session.title),
                       ),
                     );
                   }),
