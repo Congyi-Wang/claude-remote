@@ -3,7 +3,9 @@ import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 class TerminalScreen extends StatefulWidget {
-  const TerminalScreen({super.key});
+  final String sessionName;
+  final String token;
+  const TerminalScreen({super.key, required this.sessionName, required this.token});
 
   @override
   State<TerminalScreen> createState() => _TerminalScreenState();
@@ -14,12 +16,14 @@ class _TerminalScreenState extends State<TerminalScreen> {
   bool _loading = true;
   String? _error;
 
-  static const _terminalUrl = 'http://46.224.150.45/claude-terminal/';
+  String get _terminalUrl =>
+      'http://46.224.150.45/claude-remote/api/terminals/${Uri.encodeComponent(widget.sessionName)}/page'
+      '?session=${Uri.encodeComponent(widget.sessionName)}'
+      '&token=${Uri.encodeComponent(widget.token)}';
 
   @override
   void initState() {
     super.initState();
-    // Immersive mode for maximum terminal space
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
 
     _controller = WebViewController()
@@ -37,7 +41,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
           });
         },
       ))
-      ..setBackgroundColor(Colors.black)
+      ..setBackgroundColor(const Color(0xFF1a1a2e))
       ..loadRequest(Uri.parse(_terminalUrl));
   }
 
@@ -50,7 +54,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: const Color(0xFF1a1a2e),
       body: Stack(
         children: [
           WebViewWidget(controller: _controller),
@@ -65,9 +69,9 @@ class _TerminalScreenState extends State<TerminalScreen> {
                 children: [
                   const Icon(Icons.error_outline, color: Colors.red, size: 48),
                   const SizedBox(height: 16),
-                  Text(
+                  const Text(
                     'Connection failed',
-                    style: const TextStyle(color: Colors.white, fontSize: 18),
+                    style: TextStyle(color: Colors.white, fontSize: 18),
                   ),
                   const SizedBox(height: 8),
                   Text(

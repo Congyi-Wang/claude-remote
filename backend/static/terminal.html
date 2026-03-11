@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Terminal</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #1a1a2e; }
+  #terminal { width: 100%; height: 100%; }
+  #status {
+    position: fixed; top: 0; left: 0; right: 0;
+    padding: 4px 12px; font-family: monospace; font-size: 12px;
+    color: #aaa; background: rgba(26,26,46,0.9); z-index: 10;
+    display: none;
+  }
+  #status.show { display: block; }
+  #status.error { color: #e94560; }
+  #status.connected { color: #4ade80; }
+</style>
+</head>
+<body>
+<div id="status"></div>
+<div id="terminal"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.min.js"></script>
+<script>
+(function() {
+  const params = new URLSearchParams(window.location.search);
+  const session = params.get('session');
+  const token = params.get('token');
+
+  if (!session || !token) {
+    document.getElementById('status').textContent = 'Missing session or token';
+    document.getElementById('status').className = 'show error';
+    return;
+  }
+
+  const term = new Terminal({
+    cursorBlink: true,
+    cursorStyle: 'bar',
+    fontSize: 14,
+    fontFamily: "'Fira Code', 'Cascadia Code', 'JetBrains Mono', monospace",
+    theme: {
+      background: '#1a1a2e',
+      foreground: '#e0e0e0',
+      cursor: '#e94560',
+      cursorAccent: '#1a1a2e',
+      selectionBackground: 'rgba(233,69,96,0.3)',
+      black: '#1a1a2e',
+      red: '#e94560',
+      green: '#4ade80',
+      yellow: '#fbbf24',
+      blue: '#60a5fa',
+      magenta: '#c084fc',
+      cyan: '#22d3ee',
+      white: '#e0e0e0',
+      brightBlack: '#4a4a6a',
+      brightRed: '#ff6b8a',
+      brightGreen: '#6ee7a0',
+      brightYellow: '#fcd34d',
+      brightBlue: '#93bbfd',
+      brightMagenta: '#d8b4fe',
+      brightCyan: '#67e8f9',
+      brightWhite: '#ffffff',
+    },
+    allowProposedApi: true,
+  });
+
+  const fitAddon = new FitAddon.FitAddon();
+  const webLinksAddon = new WebLinksAddon.WebLinksAddon();
+  term.loadAddon(fitAddon);
+  term.loadAddon(webLinksAddon);
+  term.open(document.getElementById('terminal'));
+  fitAddon.fit();
+
+  const statusEl = document.getElementById('status');
+  let ws = null;
+  let reconnectTimer = null;
+
+  function showStatus(msg, cls) {
+    statusEl.textContent = msg;
+    statusEl.className = 'show ' + (cls || '');
+    if (cls === 'connected') {
+      setTimeout(() => { statusEl.className = ''; }, 2000);
+    }
+  }
+
+  function connect() {
+    if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) return;
+
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = proto + '//' + location.host + '/claude-remote/api/terminals/ws/' + encodeURIComponent(session) + '?token=' + encodeURIComponent(token);
+
+    showStatus('Connecting...', '');
+    ws = new WebSocket(wsUrl);
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = function() {
+      showStatus('Connected', 'connected');
+      // Send current size
+      sendResize();
+    };
+
+    ws.onmessage = function(ev) {
+      if (ev.data instanceof ArrayBuffer) {
+        term.write(new Uint8Array(ev.data));
+      } else {
+        term.write(ev.data);
+      }
+    };
+
+    ws.onclose = function() {
+      showStatus('Disconnected — reconnecting...', 'error');
+      scheduleReconnect();
+    };
+
+    ws.onerror = function() {
+      showStatus('Connection error', 'error');
+    };
+  }
+
+  function scheduleReconnect() {
+    if (reconnectTimer) return;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connect();
+    }, 2000);
+  }
+
+  function sendResize() {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+    }
+  }
+
+  // Terminal input -> WebSocket
+  term.onData(function(data) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(data);
+    }
+  });
+
+  // Handle resize
+  window.addEventListener('resize', function() {
+    fitAddon.fit();
+    sendResize();
+  });
+
+  new ResizeObserver(function() {
+    fitAddon.fit();
+    sendResize();
+  }).observe(document.getElementById('terminal'));
+
+  // Connect
+  connect();
+})();
+</script>
+</body>
+</html>

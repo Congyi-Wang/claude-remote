@@ -67,4 +67,39 @@ class ApiService {
     }
     return {};
   }
+
+  Future<List<Map<String, dynamic>>> getTerminalSessions() async {
+    final resp = await http.get(
+      Uri.parse('$baseUrl/api/terminals/?token=$_token'),
+    );
+    if (resp.statusCode == 200) {
+      final data = jsonDecode(resp.body);
+      return List<Map<String, dynamic>>.from(data['sessions']);
+    }
+    return [];
+  }
+
+  Future<void> createTerminalSession(String name, {String? command}) async {
+    final body = {'name': name};
+    if (command != null) body['command'] = command;
+    final resp = await http.post(
+      Uri.parse('$baseUrl/api/terminals/?token=$_token'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode(body),
+    );
+    if (resp.statusCode != 200) {
+      final data = jsonDecode(resp.body);
+      throw Exception(data['detail'] ?? 'Failed to create session');
+    }
+  }
+
+  Future<void> deleteTerminalSession(String name) async {
+    final resp = await http.delete(
+      Uri.parse('$baseUrl/api/terminals/$name?token=$_token'),
+    );
+    if (resp.statusCode != 200) {
+      final data = jsonDecode(resp.body);
+      throw Exception(data['detail'] ?? 'Failed to delete session');
+    }
+  }
 }
