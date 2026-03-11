@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/api_service.dart';
-import 'home_screen.dart';
+import 'terminal_screen.dart';
 
 class PinScreen extends StatefulWidget {
   final ApiService apiService;
@@ -43,7 +43,7 @@ class _PinScreenState extends State<PinScreen> {
     if (ok && mounted) {
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(
-          builder: (_) => HomeScreen(apiService: widget.apiService),
+          builder: (_) => const TerminalScreen(),
         ),
       );
     } else {
