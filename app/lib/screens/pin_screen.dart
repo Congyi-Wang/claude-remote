@@ -62,7 +62,7 @@ class _PinScreenState extends State<PinScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.terminal, size: 64, color: Color(0xFFe94560)),
+            const Icon(Icons.cell_tower, size: 64, color: Color(0xFFe94560)),
             const SizedBox(height: 16),
             const Text(
               'Claude Remote',
@@ -129,7 +129,12 @@ class _PinScreenState extends State<PinScreen> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: keys.map((k) {
-          if (k.isEmpty) return const SizedBox(width: 80);
+          if (k.isEmpty) {
+            return const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 12),
+              child: SizedBox(width: 72),
+            );
+          }
           return Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12),
             child: InkWell(

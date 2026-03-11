@@ -10,6 +10,7 @@ services:
       - /usr/local/lib/node_modules/@anthropic-ai:/usr/local/lib/node_modules/@anthropic-ai:ro
       - /usr/local/bin/claude:/usr/local/bin/claude:ro
       - /home/claude-dev/.claude:/home/claude-dev/.claude
+      - /home/claude-dev/.claude.json:/home/claude-dev/.claude.json:ro
     environment:
       - HOME=/home/claude-dev
       - PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
