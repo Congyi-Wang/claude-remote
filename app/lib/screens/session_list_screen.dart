@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../services/api_service.dart';
 import '../models/session_model.dart';
 import 'terminal_screen.dart';
+import 'chat_screen.dart';
 import 'usage_screen.dart';
 
 class SessionListScreen extends StatefulWidget {
@@ -53,13 +54,28 @@ class _SessionListScreenState extends State<SessionListScreen> {
     ).then((_) => _refresh());
   }
 
-  // --- Resume a Claude chat session in a tmux terminal ---
+  // --- Open Claude chat session with structured rendering ---
 
-  Future<void> _resumeChat(String sessionId, String title) async {
-    // Use short name for tmux: "chat-<first 8 chars of session id>"
+  void _openChat(String sessionId, String title) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ChatScreen(
+          apiService: widget.apiService,
+          sessionId: sessionId,
+          title: title,
+        ),
+      ),
+    ).then((_) => _refresh());
+  }
+
+  void _newChat() {
+    _openChat('new', 'New Session');
+  }
+
+  // --- Open Claude session in terminal (for SSH sync) ---
+
+  Future<void> _openChatInTerminal(String sessionId) async {
     final tmuxName = 'chat-${sessionId.substring(0, 8)}';
-
-    // Check if this tmux session already exists
     final existing = _terminalSessions.any((s) => s['name'] == tmuxName);
     if (!existing) {
       try {
@@ -75,27 +91,6 @@ class _SessionListScreenState extends State<SessionListScreen> {
         }
         return;
       }
-    }
-    _openTerminal(tmuxName);
-  }
-
-  // --- New Claude chat session in a tmux terminal ---
-
-  Future<void> _newChat() async {
-    // Create a tmux session running claude
-    final tmuxName = 'claude-${DateTime.now().millisecondsSinceEpoch ~/ 1000}';
-    try {
-      await widget.apiService.createTerminalSession(
-        tmuxName,
-        command: 'claude --dangerously-skip-permissions',
-      );
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed: $e'), backgroundColor: Colors.red),
-        );
-      }
-      return;
     }
     _openTerminal(tmuxName);
   }
@@ -316,7 +311,12 @@ class _SessionListScreenState extends State<SessionListScreen> {
                           '${session.messageCount} messages · ${_formatChatTime(session.updatedAt)}',
                           style: TextStyle(color: Colors.grey[500], fontSize: 12),
                         ),
-                        onTap: () => _resumeChat(session.id, session.title),
+                        trailing: IconButton(
+                          icon: Icon(Icons.terminal, color: Colors.grey[600], size: 20),
+                          tooltip: 'Open in terminal',
+                          onPressed: () => _openChatInTerminal(session.id),
+                        ),
+                        onTap: () => _openChat(session.id, session.title),
                       ),
                     );
                   }),

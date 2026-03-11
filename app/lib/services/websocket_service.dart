@@ -11,7 +11,10 @@ class WebSocketService {
   String? _connectSessionId;
   WsState _state = WsState.disconnected;
 
-  Function(String)? onChunk;
+  // Structured event callbacks
+  Function(String)? onText;
+  Function(Map<String, dynamic>)? onToolUse;
+  Function(Map<String, dynamic>)? onToolResult;
   Function(Map<String, dynamic>)? onDone;
   Function(String)? onStatus;
   Function(String)? onSessionId;
@@ -25,7 +28,6 @@ class WebSocketService {
   int _reconnectAttempts = 0;
   static const _maxReconnectAttempts = 15;
   Completer<bool>? _authCompleter;
-  // Queue messages sent while connecting
   final List<String> _pendingMessages = [];
 
   void _setState(WsState s) {
@@ -66,15 +68,20 @@ class WebSocketService {
               if (_authCompleter != null && !_authCompleter!.isCompleted) {
                 _authCompleter!.complete(true);
               }
-              // Flush any messages queued while connecting
               _flushPending();
               break;
             case 'session_id':
               _sessionId = msg['session_id'];
               onSessionId?.call(_sessionId!);
               break;
-            case 'chunk':
-              onChunk?.call(msg['text'] ?? '');
+            case 'text':
+              onText?.call(msg['text'] ?? '');
+              break;
+            case 'tool_use':
+              onToolUse?.call(msg);
+              break;
+            case 'tool_result':
+              onToolResult?.call(msg);
               break;
             case 'done':
               onDone?.call(msg);
@@ -108,7 +115,6 @@ class WebSocketService {
         },
       );
 
-      // Wait for auth_ok with timeout
       final ok = await _authCompleter!.future
           .timeout(const Duration(seconds: 10), onTimeout: () => false);
 
@@ -153,7 +159,6 @@ class WebSocketService {
     if (_state == WsState.connected && _channel != null) {
       _channel!.sink.add(payload);
     } else {
-      // Queue the message — it will be sent when connected
       _pendingMessages.add(payload);
       if (_state == WsState.disconnected) {
         _tryReconnect();

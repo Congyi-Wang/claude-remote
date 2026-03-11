@@ -83,7 +83,6 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
             msg_text = await websocket.receive_text()
             msg_data = json.loads(msg_text)
 
-            # Handle pong from client
             if msg_data.get("type") == "pong":
                 continue
 
@@ -95,8 +94,9 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
             activity_log.log_user_message(session_id, user_message)
             await websocket.send_json({"type": "status", "text": "thinking"})
 
-            async def on_chunk(text):
-                await websocket.send_json({"type": "chunk", "text": text})
+            async def on_event(event):
+                """Forward structured events to the client."""
+                await websocket.send_json(event)
 
             async def on_done(result):
                 error = result.get("error")
@@ -117,7 +117,7 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                 session_id = new_id
                 await websocket.send_json({"type": "session_id", "session_id": new_id})
 
-            await send_message(session_id, user_message, on_chunk, on_done,
+            await send_message(session_id, user_message, on_event, on_done,
                              on_session_id=on_session_id)
 
     except WebSocketDisconnect:

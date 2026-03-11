@@ -10,36 +10,16 @@ from jsonl_parser import get_session_messages
 _active_sessions: dict[str, dict] = {}
 
 
-def _build_context_prompt(session_id: str, message: str) -> str:
-    """Build a prompt that includes conversation history from the JSONL file."""
-    history = get_session_messages(session_id)
-    if not history:
-        return message
+async def send_message(session_id: str, message: str, on_event, on_done, on_session_id=None):
+    """Send a message to claude CLI and stream structured events."""
+    result = await _run_claude(session_id, message, on_event, on_done, on_session_id, use_resume=True)
 
-    # Build conversation context (limit to last 20 messages to avoid token overflow)
-    recent = history[-20:]
-    lines = ["Here is our previous conversation for context:\n"]
-    for msg in recent:
-        role = "User" if msg["role"] == "user" else "Assistant"
-        text = msg["text"][:500]  # truncate very long messages
-        lines.append(f"{role}: {text}\n")
-    lines.append(f"\nNow continue the conversation. The user says:\n{message}")
-    return "\n".join(lines)
-
-
-async def send_message(session_id: str, message: str, on_chunk, on_done, on_session_id=None):
-    """Send a message to claude CLI and stream the response via callbacks."""
-    # Always try --resume first (maintains conversation context)
-    result = await _run_claude(session_id, message, on_chunk, on_done, on_session_id, use_resume=True)
-
-    # If --resume failed, retry with conversation history injected as context
     if result == "retry_without_resume":
-        context_message = _build_context_prompt(session_id, message)
-        await _run_claude(session_id, context_message, on_chunk, on_done, on_session_id, use_resume=False)
+        await _run_claude(session_id, message, on_event, on_done, on_session_id, use_resume=False)
 
 
-async def _run_claude(session_id, message, on_chunk, on_done, on_session_id, use_resume):
-    """Run claude CLI. Returns 'retry_without_resume' if resume fails."""
+async def _run_claude(session_id, message, on_event, on_done, on_session_id, use_resume):
+    """Run claude CLI and emit structured events."""
     cmd = [
         "claude", "-p",
         "--output-format", "stream-json",
@@ -54,6 +34,8 @@ async def _run_claude(session_id, message, on_chunk, on_done, on_session_id, use
     env.pop("CLAUDECODE", None)
 
     actual_session_id = session_id
+    # Track tool uses to match with results
+    pending_tools = {}
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -61,6 +43,7 @@ async def _run_claude(session_id, message, on_chunk, on_done, on_session_id, use
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            cwd=os.path.expanduser("~"),
         )
 
         _active_sessions[session_id] = {"process": proc, "status": "running"}
@@ -99,11 +82,55 @@ async def _run_claude(session_id, message, on_chunk, on_done, on_session_id, use
             elif msg_type == "assistant":
                 content = data.get("message", {}).get("content", [])
                 for item in content:
-                    if isinstance(item, dict) and item.get("type") == "text":
+                    if not isinstance(item, dict):
+                        continue
+                    item_type = item.get("type", "")
+
+                    if item_type == "text":
                         text = item.get("text", "")
                         if text:
                             full_text += text
-                            await on_chunk(text)
+                            await on_event({
+                                "type": "text",
+                                "text": text,
+                            })
+
+                    elif item_type == "tool_use":
+                        tool_id = item.get("id", "")
+                        tool_name = item.get("name", "")
+                        tool_input = item.get("input", {})
+                        pending_tools[tool_id] = tool_name
+                        await on_event({
+                            "type": "tool_use",
+                            "tool_id": tool_id,
+                            "name": tool_name,
+                            "input": _summarize_tool_input(tool_name, tool_input),
+                        })
+
+            elif msg_type == "user":
+                # Tool results come as user messages with tool_result content
+                content = data.get("message", {}).get("content", [])
+                for item in content:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("type") == "tool_result":
+                        tool_id = item.get("tool_use_id", "")
+                        tool_name = pending_tools.pop(tool_id, "Tool")
+                        is_error = item.get("is_error", False)
+                        output = item.get("content", "")
+                        if isinstance(output, list):
+                            parts = []
+                            for c in output:
+                                if isinstance(c, dict) and c.get("type") == "text":
+                                    parts.append(c.get("text", ""))
+                            output = "\n".join(parts)
+                        await on_event({
+                            "type": "tool_result",
+                            "tool_id": tool_id,
+                            "name": tool_name,
+                            "output": _truncate(str(output), 2000),
+                            "is_error": is_error,
+                        })
 
             elif msg_type == "result":
                 got_result = True
@@ -122,7 +149,7 @@ async def _run_claude(session_id, message, on_chunk, on_done, on_session_id, use
                         "text": data.get("result", full_text),
                         "cost_usd": data.get("total_cost_usd", 0),
                         "duration_ms": data.get("duration_ms", 0),
-                        "usage": data.get("usage", {}),
+                        "num_turns": data.get("num_turns", 1),
                     }
                     await on_done(result)
 
@@ -140,6 +167,36 @@ async def _run_claude(session_id, message, on_chunk, on_done, on_session_id, use
             _active_sessions.pop(actual_session_id, None)
 
     return None
+
+
+def _summarize_tool_input(tool_name: str, tool_input: dict) -> str:
+    """Create a readable summary of tool input."""
+    if tool_name == "Bash":
+        return tool_input.get("command", str(tool_input))
+    elif tool_name in ("Read", "Write"):
+        return tool_input.get("file_path", str(tool_input))
+    elif tool_name == "Edit":
+        fp = tool_input.get("file_path", "")
+        return fp
+    elif tool_name == "Grep":
+        return f'{tool_input.get("pattern", "")} in {tool_input.get("path", ".")}'
+    elif tool_name == "Glob":
+        return tool_input.get("pattern", str(tool_input))
+    elif tool_name == "WebSearch":
+        return tool_input.get("query", str(tool_input))
+    elif tool_name == "WebFetch":
+        return tool_input.get("url", str(tool_input))
+    elif tool_name == "Agent":
+        return tool_input.get("description", tool_input.get("prompt", str(tool_input))[:100])
+    else:
+        s = json.dumps(tool_input)
+        return _truncate(s, 200)
+
+
+def _truncate(s: str, max_len: int) -> str:
+    if len(s) <= max_len:
+        return s
+    return s[:max_len] + "..."
 
 
 def create_session_id() -> str:
