@@ -3,17 +3,9 @@ from fastapi import APIRouter, HTTPException, Depends, WebSocket, WebSocketDisco
 from auth import verify_token
 from jsonl_parser import list_session_files, get_session_messages
 from session_manager import send_message, create_session_id, get_active_sessions, stop_session
+import activity_log
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
-
-
-def _check_auth(authorization: str = "") -> bool:
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing token")
-    token = authorization.replace("Bearer ", "")
-    if not verify_token(token):
-        raise HTTPException(status_code=401, detail="Invalid token")
-    return True
 
 
 @router.get("/")
@@ -68,6 +60,8 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
     if session_id == "new":
         session_id = create_session_id()
 
+    activity_log.log_connect(session_id)
+
     try:
         while True:
             # Wait for user message
@@ -79,16 +73,28 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                 await websocket.send_json({"type": "error", "text": "Empty message"})
                 continue
 
+            activity_log.log_user_message(session_id, user_message)
             await websocket.send_json({"type": "status", "text": "thinking"})
 
             async def on_chunk(text):
                 await websocket.send_json({"type": "chunk", "text": text})
 
             async def on_done(result):
+                error = result.get("error")
+                if error:
+                    activity_log.log_error(session_id, error)
+                else:
+                    activity_log.log_assistant_done(
+                        result.get("session_id", session_id),
+                        result.get("text", ""),
+                        result.get("cost_usd", 0),
+                        result.get("duration_ms", 0),
+                    )
                 await websocket.send_json({"type": "done", **result})
 
             async def on_session_id(new_id):
                 nonlocal session_id
+                activity_log.log_session_new(new_id)
                 session_id = new_id
                 await websocket.send_json({"type": "session_id", "session_id": new_id})
 
@@ -96,8 +102,9 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                              on_session_id=on_session_id)
 
     except WebSocketDisconnect:
-        pass
+        activity_log.log_disconnect(session_id)
     except Exception:
+        activity_log.log_disconnect(session_id)
         try:
             await websocket.close()
         except Exception:
