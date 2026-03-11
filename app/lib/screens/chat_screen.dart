@@ -61,6 +61,20 @@ class _ChatScreenState extends State<ChatScreen> {
     };
 
     _ws.onDone = (result) {
+      final error = result['error'];
+      if (error != null) {
+        setState(() {
+          _streamingText = '';
+          _sending = false;
+          _status = '';
+        });
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error: $error')),
+          );
+        }
+        return;
+      }
       final text = _streamingText.isNotEmpty
           ? _streamingText
           : result['text'] ?? '';

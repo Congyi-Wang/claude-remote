@@ -2,6 +2,7 @@ import asyncio
 import json
 import uuid
 import os
+import sys
 from typing import Optional
 
 # Track active sessions: session_id -> process info
@@ -18,6 +19,7 @@ async def send_message(session_id: str, message: str, on_chunk, on_done):
     cmd = [
         "claude", "-p",
         "--output-format", "stream-json",
+        "--verbose",
         "--resume", session_id,
         "--dangerously-skip-permissions",
         message
@@ -36,15 +38,25 @@ async def send_message(session_id: str, message: str, on_chunk, on_done):
 
         _active_sessions[session_id] = {"process": proc, "status": "running"}
 
+        # Drain stderr in background to avoid deadlock and log errors
+        async def _drain_stderr():
+            async for line in proc.stderr:
+                msg = line.decode("utf-8", errors="replace").strip()
+                if msg:
+                    print(f"[claude-cli stderr] {msg}", file=sys.stderr)
+        stderr_task = asyncio.create_task(_drain_stderr())
+
         full_text = ""
-        # Read stderr line by line (stream-json writes to stderr)
-        async for line in proc.stderr:
+        got_result = False
+        # Read stdout line by line (stream-json with --verbose writes to stdout)
+        async for line in proc.stdout:
             line_str = line.decode("utf-8", errors="replace").strip()
             if not line_str:
                 continue
             try:
                 data = json.loads(line_str)
             except json.JSONDecodeError:
+                print(f"[claude-cli] non-json: {line_str[:200]}", file=sys.stderr)
                 continue
 
             msg_type = data.get("type", "")
@@ -60,6 +72,7 @@ async def send_message(session_id: str, message: str, on_chunk, on_done):
                             await on_chunk(text)
 
             elif msg_type == "result":
+                got_result = True
                 result = {
                     "session_id": data.get("session_id", session_id),
                     "text": data.get("result", full_text),
@@ -70,6 +83,11 @@ async def send_message(session_id: str, message: str, on_chunk, on_done):
                 await on_done(result)
 
         await proc.wait()
+        await stderr_task
+
+        # If process ended without a result message, send error
+        if not got_result:
+            await on_done({"error": f"Claude process exited with code {proc.returncode}", "session_id": session_id})
 
     except Exception as e:
         await on_done({"error": str(e), "session_id": session_id})
