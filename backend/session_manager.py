@@ -4,9 +4,27 @@ import uuid
 import os
 import sys
 from typing import Optional
+from jsonl_parser import get_session_messages
 
 # Track active sessions: session_id -> process info
 _active_sessions: dict[str, dict] = {}
+
+
+def _build_context_prompt(session_id: str, message: str) -> str:
+    """Build a prompt that includes conversation history from the JSONL file."""
+    history = get_session_messages(session_id)
+    if not history:
+        return message
+
+    # Build conversation context (limit to last 20 messages to avoid token overflow)
+    recent = history[-20:]
+    lines = ["Here is our previous conversation for context:\n"]
+    for msg in recent:
+        role = "User" if msg["role"] == "user" else "Assistant"
+        text = msg["text"][:500]  # truncate very long messages
+        lines.append(f"{role}: {text}\n")
+    lines.append(f"\nNow continue the conversation. The user says:\n{message}")
+    return "\n".join(lines)
 
 
 async def send_message(session_id: str, message: str, on_chunk, on_done, on_session_id=None):
@@ -14,9 +32,10 @@ async def send_message(session_id: str, message: str, on_chunk, on_done, on_sess
     # Always try --resume first (maintains conversation context)
     result = await _run_claude(session_id, message, on_chunk, on_done, on_session_id, use_resume=True)
 
-    # If --resume failed with "No conversation found", retry as new session
+    # If --resume failed, retry with conversation history injected as context
     if result == "retry_without_resume":
-        await _run_claude(session_id, message, on_chunk, on_done, on_session_id, use_resume=False)
+        context_message = _build_context_prompt(session_id, message)
+        await _run_claude(session_id, context_message, on_chunk, on_done, on_session_id, use_resume=False)
 
 
 async def _run_claude(session_id, message, on_chunk, on_done, on_session_id, use_resume):
